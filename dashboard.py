@@ -1,20 +1,46 @@
-from sqlalchemy import create_engine
 import streamlit as st
 import pandas as pd
 import psycopg2
 import plotly.express as px
+from sqlalchemy import create_engine
 
-# --- PAGE SETUP ---
+# --------------------------------------------------------------------------
+# 1. PAGE CONFIGURATION
+# --------------------------------------------------------------------------
 st.set_page_config(page_title="Sales Dashboard", layout="wide")
 st.title("📊 Monthly Sales Live Dashboard")
 
-# --- DATABASE CONNECTION ---
+# --------------------------------------------------------------------------
+# 2. LOGIN AUTHENTICATION (THE GATEKEEPER)
+# --------------------------------------------------------------------------
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+
+def login():
+    st.header("🔒 Founders Login")
+    user = st.text_input("Username")
+    pwd = st.text_input("Password", type="password")
+    
+    if st.button("Log in"):
+        # Check against secrets
+        if user == st.secrets["admin"]["username"] and pwd == st.secrets["admin"]["password"]:
+            st.session_state["logged_in"] = True
+            st.rerun()
+        else:
+            st.error("❌ Incorrect Username or Password")
+
+# Stop the app here if not logged in
+if not st.session_state["logged_in"]:
+    login()
+    st.stop() 
+
+# --------------------------------------------------------------------------
+# 3. DATABASE CONNECTION & DATA FETCHING
+# --------------------------------------------------------------------------
 @st.cache_data
 def get_data():
     try:
-        # Use st.secrets to get the connection string securely
         conn = psycopg2.connect(st.secrets["postgres"]["url"])
-        
         query = "SELECT * FROM monthly_sales;"
         df = pd.read_sql(query, conn)
         conn.close()
@@ -25,19 +51,33 @@ def get_data():
     except Exception as e:
         st.error(f"Error connecting to database: {e}")
         return pd.DataFrame()
+
+# Load the data immediately after login
 df = get_data()
 
-if not df.empty:
-    st.sidebar.header("📂 Data Upload")
-    uploaded_file = st.sidebar.file_uploader("Upload New Sales CSV", type=["csv"])
+# --------------------------------------------------------------------------
+# 4. SIDEBAR: DATA UPLOAD & FILTERS
+# --------------------------------------------------------------------------
+st.sidebar.header("📂 Data Management")
 
-    if uploaded_file is not None:
-        try:
-            # 1. Read the file
+# A. Data Uploader (Supports Sales and Amazon Ads)
+upload_type = st.sidebar.selectbox("Select Upload Type", ["Monthly Sales", "Amazon Ads"])
+uploaded_file = st.sidebar.file_uploader(f"Upload {upload_type} CSV", type=["csv"])
+
+if uploaded_file is not None:
+    try:
+        engine = create_engine(st.secrets["postgres"]["url"])
+        
+        if upload_type == "Monthly Sales":
+            # Simple append for sales data
+            new_data = pd.read_csv(uploaded_file)
+            new_data.to_sql("monthly_sales", engine, if_exists="append", index=False)
+            st.sidebar.success("✅ Sales Data Uploaded!")
+            st.cache_data.clear() # Clear cache so new data shows up
+
+        elif upload_type == "Amazon Ads":
+            # Complex mapping for Amazon data
             ad_df = pd.read_csv(uploaded_file)
-            
-            # 2. Rename columns to match our SQL table exactly
-            # We use a dictionary to map "CSV Header" -> "SQL Column"
             column_map = {
                 'Products': 'products', 'Status': 'status', 'Ad Type': 'ad_type', 
                 'Sponsored': 'sponsored', 'Sales(INR)': 'sales_inr', 'ROAS': 'roas', 
@@ -48,53 +88,38 @@ if not df.empty:
                 'NTB Sales(INR)': 'ntb_sales_inr', '% of Sales': 'percent_of_sales', 
                 'Viewable Impressions': 'viewable_impressions'
             }
-            
-            # Rename and keep only the columns we need
+            # Rename and filter columns
             ad_df = ad_df.rename(columns=column_map)
-            ad_df = ad_df[column_map.values()]
-
-            # 3. Connect and Append to Database
-            # We use SQLAlchemy here because it's much faster for writing data
-            engine = create_engine(st.secrets["postgres"]["url"])
+            # Only keep columns that exist in our mapping
+            valid_cols = [c for c in column_map.values() if c in ad_df.columns]
+            ad_df = ad_df[valid_cols]
+            
             ad_df.to_sql("amazon_ads", engine, if_exists="append", index=False)
-            
-            st.sidebar.success(f"✅ Success! {len(ad_df)} rows uploaded to 'amazon_ads'.")
-            
-        except Exception as e:
-            st.sidebar.error(f"Error: {e}")
-        
-    st.sidebar.markdown("---")
-    # --- SIDEBAR FILTERS ---
-    st.sidebar.header("Filter Data")
+            st.sidebar.success("✅ Amazon Ads Data Uploaded!")
+
+    except Exception as e:
+        st.sidebar.error(f"Upload Error: {e}")
+
+st.sidebar.markdown("---")
+
+# --------------------------------------------------------------------------
+# 5. MAIN DASHBOARD LOGIC
+# --------------------------------------------------------------------------
+if not df.empty:
+    # --- FILTERS ---
+    st.sidebar.header("🔍 Filter Dashboard")
     
-    # 1. Date Filter
     min_date = df['sale_day'].min()
     max_date = df['sale_day'].max()
-    date_range = st.sidebar.date_input(
-        "Select Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
+    date_range = st.sidebar.date_input("Date Range", value=(min_date, max_date))
 
-    # 2. Region Filter
     region_list = df['shipping_region'].unique().tolist()
-    selected_regions = st.sidebar.multiselect(
-        "Select Region",
-        options=region_list,
-        default=region_list # Select all by default
-    )
+    selected_regions = st.sidebar.multiselect("Region", options=region_list, default=region_list)
 
-    # 3. Product Filter
     product_list = df['product_title'].unique().tolist()
-    selected_products = st.sidebar.multiselect(
-        "Select Product",
-        options=product_list,
-        default=product_list
-    )
+    selected_products = st.sidebar.multiselect("Product", options=product_list, default=product_list)
 
     # --- APPLY FILTERS ---
-    # We create a new "filtered_df" that only keeps what matches your choices
     mask = (
         (df['sale_day'].dt.date >= date_range[0]) &
         (df['sale_day'].dt.date <= date_range[1]) &
@@ -103,17 +128,17 @@ if not df.empty:
     )
     filtered_df = df[mask]
 
-    # --- TOP METRICS (Based on Filtered Data) ---
+    # --- METRICS ---
     total_revenue = filtered_df['net_sales'].sum()
     total_orders = filtered_df['quantity_order'].sum()
     
     col1, col2 = st.columns(2)
-    col1.metric("💰 Revenue (Filtered)", f"₹{total_revenue:,.2f}")
-    col2.metric("📦 Orders (Filtered)", f"{total_orders}")
+    col1.metric("💰 Total Revenue", f"₹{total_revenue:,.2f}")
+    col2.metric("📦 Total Orders", f"{total_orders}")
 
     st.markdown("---")
 
-    # --- CHARTS (Based on Filtered Data) ---
+    # --- CHARTS ---
     col3, col4 = st.columns(2)
     
     with col3:
@@ -127,24 +152,14 @@ if not df.empty:
         if not filtered_df.empty:
             top_products = filtered_df.groupby('product_title')['quantity_order'].sum().nlargest(5).reset_index()
             fig_product = px.pie(top_products, names='product_title', values='quantity_order', 
-                                 title="Top Products Share", hole=0.4)
+                                 title="Top 5 Products", hole=0.4)
             st.plotly_chart(fig_product, use_container_width=True)
 
-    # --- RAW DATA TABLE ---
-    st.subheader("📋 Detailed Data View")
-    st.write(f"Showing {len(filtered_df)} rows based on your filters")
-    st.dataframe(filtered_df)
-    # --- DOWNLOAD BUTTON ---
-    # 1. Convert the filtered data to CSV format in memory
-    csv = filtered_df.to_csv(index=False).encode('utf-8')
-
-    # 2. Create the download button
-    st.download_button(
-        label="📥 Download Filtered Data as CSV",
-        data=csv,
-        file_name="my_filtered_sales.csv",
-        mime="text/csv",
-    )
+    # --- RAW DATA VIEW ---
+    with st.expander("📋 View Detailed Data"):
+        st.dataframe(filtered_df)
+        csv = filtered_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Filtered CSV", data=csv, file_name="sales_data.csv", mime="text/csv")
 
 else:
-    st.warning("No data found.")
+    st.warning("⚠️ No data found in the 'monthly_sales' table. Please upload data via the sidebar!")
