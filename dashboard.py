@@ -27,6 +27,13 @@ def get_data():
 df = get_data()
 
 if not df.empty:
+    st.sidebar.header("📂 Data Upload")
+    uploaded_file = st.sidebar.file_uploader("Upload New Sales CSV", type=["csv"])
+
+    if uploaded_file is not None:
+        st.sidebar.success("File Received! (Logic coming soon...)")
+        
+    st.sidebar.markdown("---")
     # --- SIDEBAR FILTERS ---
     st.sidebar.header("Filter Data")
     
