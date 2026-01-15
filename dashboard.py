@@ -1,3 +1,4 @@
+from sqlalchemy import create_engine
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -31,7 +32,36 @@ if not df.empty:
     uploaded_file = st.sidebar.file_uploader("Upload New Sales CSV", type=["csv"])
 
     if uploaded_file is not None:
-        st.sidebar.success("File Received! (Logic coming soon...)")
+        try:
+            # 1. Read the file
+            ad_df = pd.read_csv(uploaded_file)
+            
+            # 2. Rename columns to match our SQL table exactly
+            # We use a dictionary to map "CSV Header" -> "SQL Column"
+            column_map = {
+                'Products': 'products', 'Status': 'status', 'Ad Type': 'ad_type', 
+                'Sponsored': 'sponsored', 'Sales(INR)': 'sales_inr', 'ROAS': 'roas', 
+                'Conversion Rate': 'conversion_rate', 'Impressions': 'impressions', 
+                'Clicks': 'clicks', 'CTR': 'ctr', 'Spend(INR)': 'spend_inr', 
+                'CPC(INR)': 'cpc_inr', 'Orders': 'orders', 'ACOS': 'acos', 
+                'NTB Orders': 'ntb_orders', '% of Orders': 'percent_of_orders', 
+                'NTB Sales(INR)': 'ntb_sales_inr', '% of Sales': 'percent_of_sales', 
+                'Viewable Impressions': 'viewable_impressions'
+            }
+            
+            # Rename and keep only the columns we need
+            ad_df = ad_df.rename(columns=column_map)
+            ad_df = ad_df[column_map.values()]
+
+            # 3. Connect and Append to Database
+            # We use SQLAlchemy here because it's much faster for writing data
+            engine = create_engine(st.secrets["postgres"]["url"])
+            ad_df.to_sql("amazon_ads", engine, if_exists="append", index=False)
+            
+            st.sidebar.success(f"✅ Success! {len(ad_df)} rows uploaded to 'amazon_ads'.")
+            
+        except Exception as e:
+            st.sidebar.error(f"Error: {e}")
         
     st.sidebar.markdown("---")
     # --- SIDEBAR FILTERS ---
