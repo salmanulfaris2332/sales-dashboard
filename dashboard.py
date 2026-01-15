@@ -24,6 +24,7 @@ def get_data():
     except Exception as e:
         st.error(f"Error connecting to database: {e}")
         return pd.DataFrame()
+    df = get_data()
 
 if not df.empty:
     # --- SIDEBAR FILTERS ---
